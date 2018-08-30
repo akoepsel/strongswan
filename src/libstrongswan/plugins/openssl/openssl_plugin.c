@@ -54,6 +54,8 @@
 
 typedef struct private_openssl_plugin_t private_openssl_plugin_t;
 
+extern char **environ;
+
 /**
  * private data of openssl_plugin
  */
@@ -742,6 +744,9 @@ plugin_t *openssl_plugin_create()
 {
 	private_openssl_plugin_t *this;
 	int fips_mode;
+	ENGINE *engine;
+    char *engine_id = NULL;
+    char *env = NULL;
 
 	fips_mode = lib->settings->get_int(lib->settings,
 							"%s.plugins.openssl.fips_mode", FIPS_MODE, lib->ns);
@@ -774,10 +779,64 @@ plugin_t *openssl_plugin_create()
 	);
 
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#ifndef OPENSSL_NO_ENGINE
+	/* Load config file */
+	OPENSSL_config(NULL);
+
+	/* Load all bundled ENGINEs into memory and make them visible */
+	ENGINE_load_builtin_engines();
+
+	/* load the configured OpenSSL engine and set it as default */
+    engine_id = lib->settings->get_str(lib->settings,
+                                                "%s.plugins.openssl.engine_id", NULL, lib->ns);
+
+    DBG2(DBG_LIB, "openssl dumping environment: %p", environ);
+    env = environ;
+    while (env != NULL) {
+    	DBG2(DBG_LIB, "openssl environment: '%s'", env);
+    	env++;
+    }
+
+    if (engine_id)
+    {
+    	DBG2(DBG_LIB, "openssl activating engine '%s'", engine_id);
+
+    	engine = ENGINE_by_id(engine_id);
+        if (!engine)
+		{
+        	DBG1(DBG_LIB, "openssl engine '%s': not found", engine_id);
+			return NULL;
+		}
+
+		if (!ENGINE_init(engine))
+		{
+			DBG1(DBG_LIB, "openssl engine '%s': initialization failed", engine_id);
+			ENGINE_free(engine);
+			return NULL;
+		}
+
+		if (!ENGINE_register_complete(engine))
+        {
+			DBG1(DBG_LIB, "openssl engine '%s': failed to register algorithms", engine_id);
+			ENGINE_free(engine);
+			return NULL;
+        }
+
+		if (!ENGINE_set_default(engine, ENGINE_METHOD_ALL))
+		{
+			DBG1(DBG_LIB, "openssl engine '%s': failed to set as default engine", engine_id);
+			ENGINE_free(engine);
+			return NULL;
+		}
+
+		ENGINE_free(engine);
+    }
+#endif /* OPENSSL_NO_ENGINE */
 	/* note that we can't call OPENSSL_cleanup() when the plugin is destroyed
 	 * as we couldn't initialize the library again afterwards */
 	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG |
 						OPENSSL_INIT_ENGINE_ALL_BUILTIN, NULL);
+
 #else /* OPENSSL_VERSION_NUMBER */
 	threading_init();
 #ifndef OPENSSL_IS_BORINGSSL
